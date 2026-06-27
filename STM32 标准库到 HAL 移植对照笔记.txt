@@ -1,0 +1,263 @@
+STM32 标准库到 HAL 移植对照笔记
+
+适用项目：LightControl
+芯片/系列：STM32F103C8Tx / STM32F1
+当前工程：CubeMX + HAL + CMake + VS Code
+
+这份笔记记录把标准库工程迁移到 HAL 工程时最常遇到的替换关系。
+迁移时优先让 CubeMX 生成初始化代码，自己的业务代码只放在 USER CODE 区域或单独的 .c/.h 文件中。
+
+
+1. ADC 如何从标准库改成 HAL
+
+标准库常见写法：
+
+    ADC_InitTypeDef ADC_InitStructure;
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
+    ADC_Init(ADC1, &ADC_InitStructure);
+    ADC_Cmd(ADC1, ENABLE);
+    ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+    while (ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC) == RESET);
+    value = ADC_GetConversionValue(ADC1);
+
+HAL 对应写法：
+
+    extern ADC_HandleTypeDef hadc1;
+
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+    {
+        value = HAL_ADC_GetValue(&hadc1);
+    }
+    HAL_ADC_Stop(&hadc1);
+
+迁移要点：
+
+    - 标准库直接操作 ADC1，HAL 使用 ADC_HandleTypeDef 句柄，例如 hadc1。
+    - ADC 的通道、采样时间、是否连续转换等配置由 MX_ADC1_Init() 完成。
+    - GPIO 模拟输入、ADC 时钟开启放在 HAL_ADC_MspInit() 里，一般由 CubeMX 生成。
+    - 读取一次 ADC 时，常用 HAL_ADC_Start、HAL_ADC_PollForConversion、HAL_ADC_GetValue、HAL_ADC_Stop。
+
+本项目对应：
+
+    文件：Core/Src/adc.c
+    句柄：hadc1
+    通道：ADC_CHANNEL_0
+    引脚：PA0 / ADC_Light_Pin
+    封装函数：ADC_ReadOnce()
+
+
+2. PWM 如何从标准库改成 HAL
+
+标准库常见写法：
+
+    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+    TIM_OCInitTypeDef TIM_OCInitStructure;
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+    TIM_OC2Init(TIM2, &TIM_OCInitStructure);
+    TIM_Cmd(TIM2, ENABLE);
+    TIM_SetCompare2(TIM2, pwm_value);
+
+HAL 对应写法：
+
+    extern TIM_HandleTypeDef htim2;
+
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, pwm_value);
+
+迁移要点：
+
+    - 标准库直接操作 TIM2，HAL 使用 TIM_HandleTypeDef 句柄，例如 htim2。
+    - PWM 初始化由 MX_TIM2_Init() 完成。
+    - PWM 输出引脚复用配置由 HAL_TIM_MspPostInit() 完成。
+    - 开始 PWM 必须调用 HAL_TIM_PWM_Start()。
+    - 修改占空比用 __HAL_TIM_SET_COMPARE()，本质是修改 CCR 寄存器。
+
+本项目对应：
+
+    文件：Core/Src/tim.c
+    句柄：htim2
+    通道：TIM_CHANNEL_2
+    引脚：PA1 / TIM_Led_Pin
+    频率配置：Prescaler = 71，Period = 99
+    占空比范围：0 到 100 左右，对应比较值 0 到 100
+
+
+3. USART 如何从标准库改成 HAL
+
+标准库常见写法：
+
+    USART_InitTypeDef USART_InitStructure;
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
+    USART_Init(USART1, &USART_InitStructure);
+    USART_Cmd(USART1, ENABLE);
+    USART_SendData(USART1, ch);
+    while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+
+HAL 对应写法：
+
+    extern UART_HandleTypeDef huart1;
+
+    HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, 100);
+    HAL_UART_Receive(&huart1, &rx_data, 1, 1);
+
+迁移要点：
+
+    - HAL 里 USART1 通常对应 UART_HandleTypeDef huart1。
+    - 波特率、数据位、停止位、校验位由 MX_USART1_UART_Init() 配置。
+    - 发送数据用 HAL_UART_Transmit()。
+    - 接收数据用 HAL_UART_Receive()，第三个参数是长度，第四个参数是超时时间。
+    - printf 重定向在 GCC 环境下通常实现 _write()。
+
+printf / GCC _write 示例：
+
+    #include <stdio.h>
+    #include <unistd.h>
+
+    int _write(int file, char *ptr, int len)
+    {
+        HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, 100);
+        return len;
+    }
+
+本项目对应：
+
+    文件：Core/Src/usart.c
+    句柄：huart1
+    波特率：9600
+    引脚：PA9 USART1_TX，PA10 USART1_RX
+    printf 输出：通过 _write() 转到 HAL_UART_Transmit()
+
+
+4. printf 为什么 Keil 用 fputc，GCC 用 _write
+
+Keil / ARMCC 常见写法：
+
+    int fputc(int ch, FILE *f)
+    {
+        USART_SendData(USART1, (uint8_t)ch);
+        while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+        return ch;
+    }
+
+GCC / arm-none-eabi 常见写法：
+
+    int _write(int file, char *ptr, int len)
+    {
+        HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, 100);
+        return len;
+    }
+
+区别：
+
+    - Keil 的 printf 底层更常通过 fputc() 接管单字符输出。
+    - GCC newlib 的 printf 底层更常调用 _write() 系统调用。
+    - VS Code + CMake + arm-none-eabi-gcc 工程中，优先写 _write()。
+    - 如果 printf 没有输出，先检查 _write() 是否参与编译，再检查串口初始化和波特率。
+
+本项目对应：
+
+    文件：Core/Src/usart.c
+    当前环境：GCC
+    当前做法：实现 _write()，内部调用 HAL_UART_Transmit(&huart1, ...)
+
+
+5. OLED 软件 I2C 如何从 GPIO_SetBits 改成 HAL_GPIO_WritePin
+
+标准库常见写法：
+
+    GPIO_SetBits(GPIOB, GPIO_Pin_7);
+    GPIO_ResetBits(GPIOB, GPIO_Pin_7);
+
+HAL 对应写法：
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
+
+更推荐写成宏，方便保持原 OLED 驱动结构：
+
+    #define OLED_W_SCL(x)  HAL_GPIO_WritePin(OLED_SCL_GPIO_Port, OLED_SCL_Pin, (x) ? GPIO_PIN_SET : GPIO_PIN_RESET)
+    #define OLED_W_SDA(x)  HAL_GPIO_WritePin(OLED_SDA_GPIO_Port, OLED_SDA_Pin, (x) ? GPIO_PIN_SET : GPIO_PIN_RESET)
+
+迁移要点：
+
+    - 标准库的 GPIO_SetBits / GPIO_ResetBits 合并为 HAL_GPIO_WritePin()。
+    - HAL_GPIO_WritePin() 第三个参数是 GPIO_PinState：GPIO_PIN_SET 或 GPIO_PIN_RESET。
+    - 引脚名可以使用 CubeMX 在 main.h 里生成的 OLED_SCL_Pin、OLED_SDA_Pin。
+    - 软件 I2C 的时序函数基本不用重写，只替换底层 SCL/SDA 拉高拉低函数。
+
+本项目对应：
+
+    文件：Core/Src/OLED.c
+    SCL：PB7 / OLED_SCL_Pin
+    SDA：PB8 / OLED_SDA_Pin
+    当前做法：OLED_W_SCL(x)、OLED_W_SDA(x) 已改为 HAL_GPIO_WritePin()
+
+
+6. CubeMX 中时钟、GPIO、USART、ADC、TIM 的配置对应关系
+
+CubeMX 生成的主要初始化函数：
+
+    MX_GPIO_Init();
+    MX_ADC1_Init();
+    MX_TIM2_Init();
+    MX_USART1_UART_Init();
+
+main.c 中的典型启动顺序：
+
+    HAL_Init();
+    SystemClock_Config();
+
+    MX_GPIO_Init();
+    MX_ADC1_Init();
+    MX_TIM2_Init();
+    MX_USART1_UART_Init();
+
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+    OLED_Init();
+    LightControl_Init();
+
+配置对应关系：
+
+    - 时钟树：SystemClock_Config()
+      本项目使用 HSE + PLL，系统时钟 72 MHz，ADC 分频为 PCLK2 / 6。
+
+    - GPIO：MX_GPIO_Init() 和各外设的 MspInit/PostInit
+      普通 GPIO 在 gpio.c，ADC/PWM/USART 相关引脚通常在对应外设的 MSP 函数中。
+
+    - ADC：MX_ADC1_Init()
+      对应 hadc1、ADC_CHANNEL_0、PA0 模拟输入。
+
+    - PWM/TIM：MX_TIM2_Init()
+      对应 htim2、TIM2_CH2、PA1 复用推挽输出。
+
+    - USART：MX_USART1_UART_Init()
+      对应 huart1、USART1、PA9/PA10、9600 8N1。
+
+    - 用户业务逻辑：
+      本项目放在 Core/Src/LightControl.c，主循环中调用 LightControl_Upgrade()。
+
+
+迁移时的检查清单
+
+    1. 先在 CubeMX 里配置引脚和外设，再生成 HAL 工程。
+    2. 不手写大段初始化代码，优先使用 MX_xxx_Init()。
+    3. 自己写的代码放在 USER CODE 区域，或者单独放到 LightControl.c / OLED.c 这类文件中。
+    4. 标准库外设名直接操作，迁移到 HAL 后改用句柄：ADC1 -> &hadc1，TIM2 -> &htim2，USART1 -> &huart1。
+    5. GPIO_SetBits / GPIO_ResetBits 改成 HAL_GPIO_WritePin。
+    6. Delay_ms 改成 HAL_Delay。
+    7. TIM_SetComparex 改成 __HAL_TIM_SET_COMPARE。
+    8. USART_SendData / USART_ReceiveData 改成 HAL_UART_Transmit / HAL_UART_Receive。
+    9. printf 在 GCC 下实现 _write，不优先写 fputc。
+    10. 编译通过后，再逐个验证串口、OLED、ADC、PWM 输出是否正常。
+
+
+本项目功能梳理
+
+    - AUTO 模式：读取 ADC 光照值，根据 adc_value * 100 / 4095 自动计算 pwm_value。
+    - MANUAL 模式：串口发送 + 或 - 调节 PWM，发送 0 关闭输出。
+    - 串口命令 A：切换自动/手动模式。
+    - 串口命令 S：打印当前状态。
+    - OLED 显示：模式、ADC 值、PWM 值。
+    - PWM 输出：TIM2_CH2 控制 LED 亮度。

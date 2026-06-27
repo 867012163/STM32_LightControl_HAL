@@ -1,0 +1,19 @@
+build/
+mx.scratch/
+
+# CMake and compiler outputs
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.elf
+*.hex
+*.bin
+*.map
+*.o
+*.obj
+*.d
+*.lst
+
+# Keep STM32Cube extension project metadata
+!.settings/
