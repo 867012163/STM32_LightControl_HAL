@@ -118,17 +118,21 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* adcHandle)
 }
 
 /* USER CODE BEGIN 1 */
-uint16_t ADC_ReadOnce(void)
+uint16_t ADC_ReadAverage(void)
      {
         uint16_t value;
-        HAL_ADC_Start(&hadc1);
+        uint16_t average_value;
+        for(int i=0;i<10;i++)
+        {
+          HAL_ADC_Start(&hadc1);
 
-        if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+          if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
           {
-            value = HAL_ADC_GetValue(&hadc1);
+            value += HAL_ADC_GetValue(&hadc1);
           }
 
              HAL_ADC_Stop(&hadc1);
-        return value;
+        }
+        return average_value;
       }
 /* USER CODE END 1 */

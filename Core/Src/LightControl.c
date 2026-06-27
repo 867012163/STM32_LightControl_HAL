@@ -67,7 +67,7 @@ void LightControl_Upgrade(void)
 		
 		if (mode == 0)
         {
-             adc_value = ADC_ReadOnce();
+             adc_value = ADC_ReadAverage();
 
              pwm_value = adc_value * 100 / 4095;
         }
