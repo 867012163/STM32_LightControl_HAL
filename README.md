@@ -1,4 +1,4 @@
-# LightControl
+# STM32_LightControl_HAL
 
 STM32F103C8T6 light control project migrated from a Keil Standard Peripheral Library project to a VS Code + STM32 HAL + CMake workflow.
 
